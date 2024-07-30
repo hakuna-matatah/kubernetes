@@ -27,6 +27,16 @@ import (
 const TTLAfterFinishedSubsystem = "ttl_after_finished_controller"
 
 var (
+	EventHandlingDurationMicroSeconds = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
+			Subsystem:      TTLAfterFinishedSubsystem,
+			Name:           "event_handling_duration_microseconds",
+			Help:           "The time it took to process an event",
+			StabilityLevel: metrics.ALPHA,
+			Buckets:        metrics.ExponentialBuckets(0.1, 2, 20),
+		},
+		[]string{"resource", "type"},
+	)
 	// JobDeletionDurationSeconds tracks the time it took to delete the job since it
 	// became eligible for deletion.
 	JobDeletionDurationSeconds = metrics.NewHistogram(
@@ -46,6 +56,7 @@ var registerMetrics sync.Once
 // Register registers TTL after finished controller metrics.
 func Register() {
 	registerMetrics.Do(func() {
+		legacyregistry.MustRegister(EventHandlingDurationMicroSeconds)
 		legacyregistry.MustRegister(JobDeletionDurationSeconds)
 	})
 }

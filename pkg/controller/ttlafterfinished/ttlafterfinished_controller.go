@@ -83,11 +83,19 @@ func New(ctx context.Context, jobInformer batchinformers.JobInformer, client cli
 	}
 
 	logger := klog.FromContext(ctx)
-	jobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	jobInformer.Informer().AddEventHandlerWithName("ttl-after-finished-controller", cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
+			startTime := time.Now()
+			defer func() {
+				metrics.EventHandlingDurationMicroSeconds.WithLabelValues("jobs", "add").Observe(float64(time.Since(startTime).Microseconds()))
+			}()
 			tc.addJob(logger, obj)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
+			startTime := time.Now()
+			defer func() {
+				metrics.EventHandlingDurationMicroSeconds.WithLabelValues("jobs", "update").Observe(float64(time.Since(startTime).Microseconds()))
+			}()
 			tc.updateJob(logger, oldObj, newObj)
 		},
 	})

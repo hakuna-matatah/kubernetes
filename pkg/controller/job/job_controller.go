@@ -167,14 +167,26 @@ func newControllerWithClock(ctx context.Context, podInformer coreinformers.PodIn
 		podBackoffStore:       newBackoffStore(),
 	}
 
-	if _, err := jobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	if _, err := jobInformer.Informer().AddEventHandlerWithName("job-controller", cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
+			startTime := time.Now()
+			defer func() {
+				metrics.EventHandlingDurationMicroSeconds.WithLabelValues("jobs", "add").Observe(float64(time.Since(startTime).Microseconds()))
+			}()
 			jm.addJob(logger, obj)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
+			startTime := time.Now()
+			defer func() {
+				metrics.EventHandlingDurationMicroSeconds.WithLabelValues("jobs", "update").Observe(float64(time.Since(startTime).Microseconds()))
+			}()
 			jm.updateJob(logger, oldObj, newObj)
 		},
 		DeleteFunc: func(obj interface{}) {
+			startTime := time.Now()
+			defer func() {
+				metrics.EventHandlingDurationMicroSeconds.WithLabelValues("jobs", "delete").Observe(float64(time.Since(startTime).Microseconds()))
+			}()
 			jm.deleteJob(logger, obj)
 		},
 	}); err != nil {
@@ -183,14 +195,26 @@ func newControllerWithClock(ctx context.Context, podInformer coreinformers.PodIn
 	jm.jobLister = jobInformer.Lister()
 	jm.jobStoreSynced = jobInformer.Informer().HasSynced
 
-	if _, err := podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	if _, err := podInformer.Informer().AddEventHandlerWithName("job-controller", cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
+			startTime := time.Now()
+			defer func() {
+				metrics.EventHandlingDurationMicroSeconds.WithLabelValues("pods", "add").Observe(float64(time.Since(startTime).Microseconds()))
+			}()
 			jm.addPod(logger, obj)
 		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
+			startTime := time.Now()
+			defer func() {
+				metrics.EventHandlingDurationMicroSeconds.WithLabelValues("pods", "update").Observe(float64(time.Since(startTime).Microseconds()))
+			}()
 			jm.updatePod(logger, oldObj, newObj)
 		},
 		DeleteFunc: func(obj interface{}) {
+			startTime := time.Now()
+			defer func() {
+				metrics.EventHandlingDurationMicroSeconds.WithLabelValues("pods", "delete").Observe(float64(time.Since(startTime).Microseconds()))
+			}()
 			jm.deletePod(logger, obj, true)
 		},
 	}); err != nil {

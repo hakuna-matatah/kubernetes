@@ -45,6 +45,8 @@ import (
 	"k8s.io/utils/pointer"
 	"k8s.io/utils/ptr"
 	"k8s.io/utils/trace"
+
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 )
 
 const defaultExpectedTypeName = "<unspecified>"
@@ -271,6 +273,14 @@ func getTypeDescriptionFromObject(expectedType interface{}) string {
 	return gvk.String()
 }
 
+var (
+	scheme = runtime.NewScheme()
+)
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+}
+
 func getExpectedGVKFromObject(expectedType interface{}) *schema.GroupVersionKind {
 	obj, ok := expectedType.(*unstructured.Unstructured)
 	if !ok {
@@ -283,6 +293,27 @@ func getExpectedGVKFromObject(expectedType interface{}) *schema.GroupVersionKind
 	}
 
 	return &gvk
+}
+
+func getExpectedGVKFromObjectDup(expectedType interface{}) *schema.GroupVersionKind {
+	obj, ok := expectedType.(*unstructured.Unstructured)
+	var gvk *schema.GroupVersionKind
+	if !ok {
+		ro := expectedType.(runtime.Object)
+		gvks, _, err := scheme.ObjectKinds(ro)
+		if err != nil {
+			klog.Warningf("failed to get GVK from scheme: %v", err)
+			return nil
+		}
+		gvk = &gvks[0]
+	} else {
+		gvk := obj.GroupVersionKind()
+		if gvk.Empty() {
+			return nil
+		}
+	}
+
+	return gvk
 }
 
 // internalPackages are packages that ignored when creating a default reflector name. These packages are in the common

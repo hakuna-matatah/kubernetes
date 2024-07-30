@@ -27,6 +27,17 @@ import (
 const JobControllerSubsystem = "job_controller"
 
 var (
+	EventHandlingDurationMicroSeconds = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
+			Subsystem:      JobControllerSubsystem,
+			Name:           "event_handling_duration_microseconds",
+			Help:           "The time it took to process an event",
+			StabilityLevel: metrics.ALPHA,
+			Buckets:        metrics.ExponentialBuckets(0.1, 2, 20),
+		},
+		[]string{"resource", "type"},
+	)
+
 	// JobSyncDurationSeconds tracks the latency of Job syncs. Possible label
 	// values:
 	//   completion_mode: Indexed, NonIndexed
@@ -201,6 +212,7 @@ var registerMetrics sync.Once
 // Register registers Job controller metrics.
 func Register() {
 	registerMetrics.Do(func() {
+		legacyregistry.MustRegister(EventHandlingDurationMicroSeconds)
 		legacyregistry.MustRegister(JobSyncDurationSeconds)
 		legacyregistry.MustRegister(JobSyncNum)
 		legacyregistry.MustRegister(JobFinishedNum)

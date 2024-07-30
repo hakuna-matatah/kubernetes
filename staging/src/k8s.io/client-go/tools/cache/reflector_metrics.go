@@ -35,8 +35,8 @@ type CounterMetric interface {
 	Inc()
 }
 
-// SummaryMetric captures individual observations.
-type SummaryMetric interface {
+// HistrgramMetric captures individual observations.
+type HistrgramMetric interface {
 	Observe(float64)
 }
 
@@ -47,31 +47,62 @@ func (noopMetric) Dec()            {}
 func (noopMetric) Observe(float64) {}
 func (noopMetric) Set(float64)     {}
 
-// MetricsProvider generates various metrics used by the reflector.
 type MetricsProvider interface {
-	NewListsMetric(name string) CounterMetric
-	NewListDurationMetric(name string) SummaryMetric
-	NewItemsInListMetric(name string) SummaryMetric
+	// the informer name
+	// NewStoredItemMetric(name string) GaugeMetric
+	// NewQueuedItemMetric(name string) GaugeMetric
 
-	NewWatchesMetric(name string) CounterMetric
-	NewShortWatchesMetric(name string) CounterMetric
-	NewWatchDurationMetric(name string) SummaryMetric
-	NewItemsInWatchMetric(name string) SummaryMetric
+	// the eventHandler name
+	NewPendingNotificationsMetric(name, resources string) GaugeMetric
+	// NewRingGrowingMetric(name string) GaugeMetric
+	// NewPrcoessDurationMetric(name string) HistogramMetric
+}
 
-	NewLastResourceVersionMetric(name string) GaugeMetric
+type informerMetrics struct {
+	// clock clock.Clock
+
+	// // total number of item in store
+	// numbernOfStoredItem GaugeMetric
+	// // total number of item in queue
+	// numberOfQueuedItem GaugeMetric
+
+	// each eventHandler metrics
+	eventHandlerMetrics map[string]eventHandlerMetrics
+
+	mutex sync.Mutex
+}
+
+type eventHandlerMetrics struct {
+
+	// number of pending data
+	numberOfPendingNotifications GaugeMetric
+
+	// 	// size of RingGrowring data
+	// 	sizeOfRingGrowing GaugeMetric
+
+	// // how long processing an item from informer reflector
+	// prcoessDuration HistogramMetric
 }
 
 type noopMetricsProvider struct{}
 
-func (noopMetricsProvider) NewListsMetric(name string) CounterMetric         { return noopMetric{} }
-func (noopMetricsProvider) NewListDurationMetric(name string) SummaryMetric  { return noopMetric{} }
-func (noopMetricsProvider) NewItemsInListMetric(name string) SummaryMetric   { return noopMetric{} }
-func (noopMetricsProvider) NewWatchesMetric(name string) CounterMetric       { return noopMetric{} }
-func (noopMetricsProvider) NewShortWatchesMetric(name string) CounterMetric  { return noopMetric{} }
-func (noopMetricsProvider) NewWatchDurationMetric(name string) SummaryMetric { return noopMetric{} }
-func (noopMetricsProvider) NewItemsInWatchMetric(name string) SummaryMetric  { return noopMetric{} }
-func (noopMetricsProvider) NewLastResourceVersionMetric(name string) GaugeMetric {
+// func (noopMetricsProvider) NewListsMetric(name string) CounterMetric         { return noopMetric{} }
+// func (noopMetricsProvider) NewListDurationMetric(name string) SummaryMetric  { return noopMetric{} }
+// func (noopMetricsProvider) NewItemsInListMetric(name string) SummaryMetric   { return noopMetric{} }
+// func (noopMetricsProvider) NewWatchesMetric(name string) CounterMetric       { return noopMetric{} }
+// func (noopMetricsProvider) NewShortWatchesMetric(name string) CounterMetric  { return noopMetric{} }
+// func (noopMetricsProvider) NewWatchDurationMetric(name string) SummaryMetric { return noopMetric{} }
+// func (noopMetricsProvider) NewItemsInWatchMetric(name string) SummaryMetric  { return noopMetric{} }
+//
+//	func (noopMetricsProvider) NewLastResourceVersionMetric(name string) GaugeMetric {
+//		return noopMetric{}
+//	}
+func (noopMetricsProvider) NewPendingNotificationsMetric(name, resources string) GaugeMetric {
 	return noopMetric{}
+}
+
+func (m *eventHandlerMetrics) updatePendingNotificationsCount(count int64) {
+	m.numberOfPendingNotifications.Set(float64(count))
 }
 
 var metricsFactory = struct {
@@ -81,8 +112,8 @@ var metricsFactory = struct {
 	metricsProvider: noopMetricsProvider{},
 }
 
-// SetReflectorMetricsProvider sets the metrics provider
-func SetReflectorMetricsProvider(metricsProvider MetricsProvider) {
+// SetMetricsProvider sets the metrics provider
+func SetMetricsProvider(metricsProvider MetricsProvider) {
 	metricsFactory.setProviders.Do(func() {
 		metricsFactory.metricsProvider = metricsProvider
 	})

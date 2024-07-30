@@ -70,3 +70,7 @@ func (r *RingGrowing) WriteOne(data interface{}) {
 	r.data[(r.readable+r.beg)%r.n] = data
 	r.readable++
 }
+
+func (r *RingGrowing) ReadableCount() int {
+	return r.readable
+}

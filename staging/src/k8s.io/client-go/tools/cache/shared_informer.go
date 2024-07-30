@@ -19,11 +19,13 @@ package cache
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache/synctrack"
@@ -34,6 +36,8 @@ import (
 
 	clientgofeaturegate "k8s.io/client-go/features"
 )
+
+var popConcurrency = 1
 
 // SharedInformer provides eventually consistent linkage of its
 // clients to the authoritative state of a given collection of
@@ -135,6 +139,8 @@ import (
 // state, except that its ResourceVersion is replaced with a
 // ResourceVersion in which the object is actually absent.
 type SharedInformer interface {
+	AddEventHandlerWithName(name string, handler ResourceEventHandler) (ResourceEventHandlerRegistration, error)
+
 	// AddEventHandler adds an event handler to the shared informer using
 	// the shared informer's resync period.  Events to a single handler are
 	// delivered sequentially, but there is no coordination between
@@ -268,9 +274,10 @@ func NewSharedIndexInformer(lw ListerWatcher, exampleObject runtime.Object, defa
 func NewSharedIndexInformerWithOptions(lw ListerWatcher, exampleObject runtime.Object, options SharedIndexInformerOptions) SharedIndexInformer {
 	realClock := &clock.RealClock{}
 
+	gvk := getExpectedGVKFromObjectDup(exampleObject)
 	return &sharedIndexInformer{
 		indexer:                         NewIndexer(DeletionHandlingMetaNamespaceKeyFunc, options.Indexers),
-		processor:                       &sharedProcessor{clock: realClock},
+		processor:                       &sharedProcessor{clock: realClock, gvk: gvk, metrics: metricsFactory.metricsProvider},
 		listerWatcher:                   lw,
 		objectType:                      exampleObject,
 		objectDescription:               options.ObjectDescription,
@@ -579,6 +586,14 @@ func determineResyncPeriod(desired, check time.Duration) time.Duration {
 const minimumResyncPeriod = 1 * time.Second
 
 func (s *sharedIndexInformer) AddEventHandlerWithResyncPeriod(handler ResourceEventHandler, resyncPeriod time.Duration) (ResourceEventHandlerRegistration, error) {
+	return s.addEventHandlerWithNameAndResyncPeriod("", handler, resyncPeriod)
+}
+
+func (s *sharedIndexInformer) AddEventHandlerWithName(name string, handler ResourceEventHandler) (ResourceEventHandlerRegistration, error) {
+	return s.addEventHandlerWithNameAndResyncPeriod(name, handler, s.defaultEventHandlerResyncPeriod)
+}
+
+func (s *sharedIndexInformer) addEventHandlerWithNameAndResyncPeriod(name string, handler ResourceEventHandler, resyncPeriod time.Duration) (ResourceEventHandlerRegistration, error) {
 	s.startedLock.Lock()
 	defer s.startedLock.Unlock()
 
@@ -606,7 +621,7 @@ func (s *sharedIndexInformer) AddEventHandlerWithResyncPeriod(handler ResourceEv
 		}
 	}
 
-	listener := newProcessListener(handler, resyncPeriod, determineResyncPeriod(resyncPeriod, s.resyncCheckPeriod), s.clock.Now(), initialBufferSize, s.HasSynced)
+	listener := newProcessListener(name, handler, resyncPeriod, determineResyncPeriod(resyncPeriod, s.resyncCheckPeriod), s.clock.Now(), initialBufferSize, s.HasSynced, s.processor.gvk, s.processor.metrics)
 
 	if !s.started {
 		return s.processor.addListener(listener), nil
@@ -709,12 +724,16 @@ func (s *sharedIndexInformer) RemoveEventHandler(handle ResourceEventHandlerRegi
 // calls to shouldResync and (b) every listener is initially put in.
 // The non-sync distributions go to every listener.
 type sharedProcessor struct {
+	gvk *schema.GroupVersionKind
+
 	listenersStarted bool
 	listenersLock    sync.RWMutex
 	// Map from listeners to whether or not they are currently syncing
 	listeners map[*processorListener]bool
 	clock     clock.Clock
 	wg        wait.Group
+
+	metrics MetricsProvider
 }
 
 func (p *sharedProcessor) getListener(registration ResourceEventHandlerRegistration) *processorListener {
@@ -746,7 +765,9 @@ func (p *sharedProcessor) addListener(listener *processorListener) ResourceEvent
 
 	if p.listenersStarted {
 		p.wg.Start(listener.run)
-		p.wg.Start(listener.pop)
+		for i := 0; i < popConcurrency; i++ {
+			p.wg.Start(listener.pop)
+		}
 	}
 
 	return listener
@@ -800,7 +821,9 @@ func (p *sharedProcessor) run(stopCh <-chan struct{}) {
 		defer p.listenersLock.RUnlock()
 		for listener := range p.listeners {
 			p.wg.Start(listener.run)
-			p.wg.Start(listener.pop)
+			for i := 0; i < popConcurrency; i++ {
+				p.wg.Start(listener.pop)
+			}
 		}
 		p.listenersStarted = true
 	}()
@@ -867,6 +890,8 @@ func (p *sharedProcessor) resyncCheckPeriodChanged(resyncCheckPeriod time.Durati
 // processorListener also keeps track of the adjusted requested resync
 // period of the listener.
 type processorListener struct {
+	name string
+
 	nextCh chan interface{}
 	addCh  chan interface{}
 
@@ -902,6 +927,8 @@ type processorListener struct {
 	nextResync time.Time
 	// resyncLock guards access to resyncPeriod and nextResync
 	resyncLock sync.Mutex
+
+	metrics *eventHandlerMetrics
 }
 
 // HasSynced returns true if the source informer has synced, and all
@@ -910,15 +937,32 @@ func (p *processorListener) HasSynced() bool {
 	return p.syncTracker.HasSynced()
 }
 
-func newProcessListener(handler ResourceEventHandler, requestedResyncPeriod, resyncPeriod time.Duration, now time.Time, bufferSize int, hasSynced func() bool) *processorListener {
+func newProcessListener(name string, handler ResourceEventHandler, requestedResyncPeriod, resyncPeriod time.Duration, now time.Time, bufferSize int, hasSynced func() bool, gvk *schema.GroupVersionKind, mp MetricsProvider) *processorListener {
+	// TODO: get resources name in the right way
+	resourceName := "blah"
+	if gvk != nil {
+		resourceName = strings.ToLower(gvk.Kind)
+	}
+
 	ret := &processorListener{
-		nextCh:                make(chan interface{}),
-		addCh:                 make(chan interface{}),
+		name:   name,
+		nextCh: make(chan interface{}),
+		addCh:  make(chan interface{}),
+		// nextCh:                make(chan interface{}, 1024*1024),
+		// addCh:                 make(chan interface{}, 1024*1024),
 		handler:               handler,
 		syncTracker:           &synctrack.SingleFileTracker{UpstreamHasSynced: hasSynced},
 		pendingNotifications:  *buffer.NewRingGrowing(bufferSize),
 		requestedResyncPeriod: requestedResyncPeriod,
 		resyncPeriod:          resyncPeriod,
+	}
+
+	klog.Infof("!!!!!!!!!!!! name in newProcessListener: %v", name)
+
+	if name != "" {
+		ret.metrics = &eventHandlerMetrics{
+			numberOfPendingNotifications: mp.NewPendingNotificationsMetric(name, resourceName),
+		}
 	}
 
 	ret.determineNextResync(now)
@@ -959,6 +1003,9 @@ func (p *processorListener) pop() {
 			} else { // There is already a notification waiting to be dispatched
 				p.pendingNotifications.WriteOne(notificationToAdd)
 			}
+		}
+		if p.name != "" {
+			p.metrics.updatePendingNotificationsCount(int64(p.pendingNotifications.ReadableCount()))
 		}
 	}
 }
