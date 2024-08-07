@@ -131,8 +131,8 @@ func ExpectContains(t *testing.T, msg string, expectedList []interface{}, got in
 
 const dummyPrefix = "adapter"
 
-func encodeContinueOrDie(key string, resourceVersion int64) string {
-	token, err := storage.EncodeContinue(dummyPrefix+key, dummyPrefix, resourceVersion)
+func encodeContinueOrDie(key string, resourceVersion int64, remainingCount int64) string {
+	token, err := storage.EncodeContinue(dummyPrefix+key, dummyPrefix, resourceVersion, remainingCount)
 	if err != nil {
 		panic(err)
 	}

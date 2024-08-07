@@ -635,7 +635,8 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 		t.Errorf("Unexpected error: %v", err)
 	}
 	continueRV, _ := strconv.Atoi(list.ResourceVersion)
-	secondContinuation, err := storage.EncodeContinue("/second/foo", "/second/", int64(continueRV))
+	rc := list.RemainingItemCount
+	secondContinuation, err := storage.EncodeContinue("/second/foo", "/second/", int64(continueRV), *rc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1054,7 +1055,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 				Field:    fields.OneTermEqualSelector("metadata.name", "foo"),
 				Label:    labels.Everything(),
 				Limit:    2,
-				Continue: encodeContinueOrDie("third/barfoo", int64(continueRV)),
+				Continue: encodeContinueOrDie("third/barfoo", int64(continueRV), *rc),
 			},
 			expectedOut: []example.Pod{*preset[4]},
 		},
@@ -1065,7 +1066,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 				Field:    fields.OneTermEqualSelector("metadata.name", "foo"),
 				Label:    labels.Everything(),
 				Limit:    1,
-				Continue: encodeContinueOrDie("third/barfoo", int64(continueRV)),
+				Continue: encodeContinueOrDie("third/barfoo", int64(continueRV), *rc),
 			},
 			expectedOut: []example.Pod{*preset[4]},
 		},
@@ -1076,7 +1077,7 @@ func RunTestList(ctx context.Context, t *testing.T, store storage.Interface, com
 				Field:    fields.OneTermEqualSelector("metadata.name", "foo"),
 				Label:    labels.Everything(),
 				Limit:    2,
-				Continue: encodeContinueOrDie("third/barfoo", int64(continueRV)),
+				Continue: encodeContinueOrDie("third/barfoo", int64(continueRV), *rc),
 			},
 			expectedOut: []example.Pod{*preset[4]},
 		},
@@ -1664,12 +1665,13 @@ func RunTestListContinuation(ctx context.Context, t *testing.T, store storage.In
 	if len(out.Continue) != 0 {
 		t.Fatalf("Unexpected continuation token set")
 	}
-	key, rv, err := storage.DecodeContinue(continueFromSecondItem, "/pods")
-	t.Logf("continue token was %d %s %v", rv, key, err)
+	key, rv, rc, err := storage.DecodeContinue(continueFromSecondItem, "/pods")
+	t.Logf("continue token was %d %s %d %v", rv, key, rc, err)
 	expectNoDiff(t, "incorrect second page", []example.Pod{*preset[1].storedObj, *preset[2].storedObj}, out.Items)
 	if out.ResourceVersion != currentRV {
 		t.Errorf("Expect output.ResourceVersion = %s, but got %s", currentRV, out.ResourceVersion)
 	}
+
 	if validation != nil {
 		validation(t, 0, 2)
 	}
