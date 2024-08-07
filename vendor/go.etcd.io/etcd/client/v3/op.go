@@ -44,6 +44,7 @@ type Op struct {
 	maxModRev    int64
 	minCreateRev int64
 	maxCreateRev int64
+	fastCount    bool
 
 	// for range, watch
 	rev int64
@@ -136,6 +137,9 @@ func (op Op) MinCreateRev() int64 { return op.minCreateRev }
 // MaxCreateRev returns the operation's maximum create revision.
 func (op Op) MaxCreateRev() int64 { return op.maxCreateRev }
 
+// IsFastCount returns whether fastCount is set.
+ func (op Op) IsFastCount() bool { return op.fastCount }
+
 // WithRangeBytes sets the byte slice for the Op's range end.
 func (op *Op) WithRangeBytes(end []byte) { op.end = end }
 
@@ -161,6 +165,7 @@ func (op Op) toRangeRequest() *pb.RangeRequest {
 		MaxModRevision:    op.maxModRev,
 		MinCreateRevision: op.minCreateRev,
 		MaxCreateRevision: op.maxCreateRev,
+		FastCount:         op.fastCount,
 	}
 	if op.sort != nil {
 		r.SortOrder = pb.RangeRequest_SortOrder(op.sort.Order)
@@ -447,6 +452,11 @@ func WithMinCreateRev(rev int64) OpOption { return func(op *Op) { op.minCreateRe
 
 // WithMaxCreateRev filters out keys for Get with creation revisions greater than the given revision.
 func WithMaxCreateRev(rev int64) OpOption { return func(op *Op) { op.maxCreateRev = rev } }
+
+// WithFastCount makes the 'Get' request return only the count of keys.
+func WithFastCount() OpOption {
+	return func(op *Op) { op.fastCount = true }
+}
 
 // WithFirstCreate gets the key with the oldest creation revision in the request range.
 func WithFirstCreate() []OpOption { return withTop(SortByCreateRevision, SortAscend) }

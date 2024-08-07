@@ -466,6 +466,9 @@ message RangeRequest {
   // max_create_revision is the upper bound for returned key create revisions; all keys with
   // greater create revisions will be filtered away.
   int64 max_create_revision = 13;
+
+  // `fast_count` is used to determine if a full key iteration is needed to compute `RangeResponse.count` for a matching prefix.
+  bool fast_count = 99;
 }
 
 message RangeResponse {

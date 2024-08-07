@@ -676,13 +676,14 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 
 	newItemFunc := getNewItemFunc(listObj, v)
 
-	var continueRV, withRev int64
+	var continueRV, withRev, remainingCount int64
 	var continueKey string
 	if opts.Recursive && len(opts.Predicate.Continue) > 0 {
-		continueKey, continueRV, err = storage.DecodeContinue(opts.Predicate.Continue, keyPrefix)
+		continueKey, continueRV, remainingCount, err = storage.DecodeContinue(opts.Predicate.Continue, keyPrefix)
 		if err != nil {
 			return apierrors.NewBadRequest(fmt.Sprintf("invalid continue token: %v", err))
 		}
+		klog.V(8).Infof("Continue token extracted. Revision: %d, RemainingCount: %d", continueRV, remainingCount)
 		preparedKey = continueKey
 	}
 	if withRev, err = s.resolveGetListRev(continueKey, continueRV, opts); err != nil {
@@ -710,13 +711,26 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 	if opts.Recursive {
 		metricsOp = "list"
 	}
-
+	isFastCountCall := false
 	for {
 		startTime := time.Now()
+		if opts.Recursive && len(opts.Predicate.Continue) > 0 && remainingCount > 0 {
+			klog.V(8).Info("invoking fastCount")
+			options = append(options, clientv3.WithFastCount())
+			isFastCountCall = true
+		} else {
+			isFastCountCall = false
+		}
 		getResp, err = s.client.KV.Get(ctx, preparedKey, options...)
 		metrics.RecordEtcdRequest(metricsOp, s.groupResourceString, err, startTime)
 		if err != nil {
 			return interpretListError(err, len(opts.Predicate.Continue) > 0, continueKey, keyPrefix)
+		}
+		if isFastCountCall {
+			// Assign RIC from previois call to getResp.Count, i.e; remainingItemCount for current call is calculated using
+			//remainingCount yeilded from decoding previous ContinueToken.
+			// More details on RIC - https://quip-amazon.com/CjrMAniPg7Zn/etcdAPIServer-LIST-Optimization-Migration-Plan
+			getResp.Count = remainingCount
 		}
 		numFetched += len(getResp.Kvs)
 		if err = s.validateMinimumResourceVersion(opts.ResourceVersion, uint64(getResp.Header.Revision)); err != nil {
@@ -808,18 +822,21 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 	// instruct the client to begin querying from immediately after the last key we returned
 	// we never return a key that the client wouldn't be allowed to see
 	if hasMore {
-		// we want to start immediately after the last key
-		next, err := storage.EncodeContinue(string(lastKey)+"\x00", keyPrefix, withRev)
-		if err != nil {
-			return err
-		}
+		// when predicate is empty, we need to pass nil as remainingItemCount to UpdateList
 		var remainingItemCount *int64
+		// when predicate is not empty, we need to pass 0 as ric to EncodeContinue
+		var ric int64
 		// getResp.Count counts in objects that do not match the pred.
 		// Instead of returning inaccurate count for non-empty selectors, we return nil.
 		// Only set remainingItemCount if the predicate is empty.
 		if opts.Predicate.Empty() {
-			c := int64(getResp.Count - opts.Predicate.Limit)
-			remainingItemCount = &c
+			ric = int64(getResp.Count - opts.Predicate.Limit)
+			remainingItemCount = &ric
+		}
+		// we want to start immediately after the last key
+		next, err := storage.EncodeContinue(string(lastKey)+"\x00", keyPrefix, withRev, ric)
+		if err != nil {
+			return err
 		}
 		return s.versioner.UpdateList(listObj, uint64(withRev), next, remainingItemCount)
 	}
