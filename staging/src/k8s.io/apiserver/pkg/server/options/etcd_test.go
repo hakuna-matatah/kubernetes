@@ -151,6 +151,7 @@ func TestEtcdOptionsValidate(t *testing.T) {
 					},
 					CompactionInterval:    storagebackend.DefaultCompactInterval,
 					CountMetricPollPeriod: time.Minute,
+					EnableFastCount:       true,
 				},
 				DefaultStorageMediaType: "application/vnd.kubernetes.protobuf",
 				DeleteCollectionWorkers: 1,

@@ -215,6 +215,9 @@ func (s *EtcdOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.Int64Var(&s.StorageConfig.LeaseManagerConfig.ReuseDurationSeconds, "lease-reuse-duration-seconds", s.StorageConfig.LeaseManagerConfig.ReuseDurationSeconds,
 		"The time in seconds that each lease is reused. A lower value could avoid large number of objects reusing the same lease. Notice that a too small value may cause performance problems at storage layer.")
+
+	fs.BoolVar(&s.StorageConfig.EnableFastCount, "enable-fast-count", s.StorageConfig.EnableFastCount,
+		"Enable fast counting for RangeRequests to improve the efficiency of paginated list operations in Kubernetes API Server and etcd.")
 }
 
 // ApplyTo mutates the provided server.Config.  It must never mutate the receiver (EtcdOptions).

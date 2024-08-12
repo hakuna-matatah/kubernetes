@@ -167,6 +167,7 @@ func TestAddFlags(t *testing.T) {
 						ReuseDurationSeconds: 100,
 						MaxObjectCount:       1000,
 					},
+					EnableFastCount: storagebackend.DefaultEnableFastCount,
 				},
 				DefaultStorageMediaType: "application/vnd.kubernetes.protobuf",
 				DeleteCollectionWorkers: 1,

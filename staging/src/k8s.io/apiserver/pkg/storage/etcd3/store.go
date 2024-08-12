@@ -79,6 +79,7 @@ type store struct {
 	groupResourceString string
 	watcher             *watcher
 	leaseManager        *leaseManager
+	enableFastCount     bool
 }
 
 func (s *store) RequestWatchProgress(ctx context.Context) error {
@@ -96,11 +97,11 @@ type objState struct {
 }
 
 // New returns an etcd3 implementation of storage.Interface.
-func New(c *clientv3.Client, codec runtime.Codec, newFunc, newListFunc func() runtime.Object, prefix, resourcePrefix string, groupResource schema.GroupResource, transformer value.Transformer, leaseManagerConfig LeaseManagerConfig) storage.Interface {
-	return newStore(c, codec, newFunc, newListFunc, prefix, resourcePrefix, groupResource, transformer, leaseManagerConfig)
+func New(c *clientv3.Client, codec runtime.Codec, newFunc, newListFunc func() runtime.Object, prefix, resourcePrefix string, groupResource schema.GroupResource, transformer value.Transformer, pagingConfig PagingConfig, leaseManagerConfig LeaseManagerConfig, enableFastCount bool) storage.Interface {
+	return newStore(c, codec, newFunc, newListFunc, prefix, resourcePrefix, groupResource, transformer, pagingConfig, leaseManagerConfig, enableFastCount)
 }
 
-func newStore(c *clientv3.Client, codec runtime.Codec, newFunc, newListFunc func() runtime.Object, prefix, resourcePrefix string, groupResource schema.GroupResource, transformer value.Transformer, leaseManagerConfig LeaseManagerConfig) *store {
+func newStore(c *clientv3.Client, codec runtime.Codec, newFunc, newListFunc func() runtime.Object, prefix, resourcePrefix string, groupResource schema.GroupResource, transformer value.Transformer, pagingConfig PagingConfig, leaseManagerConfig LeaseManagerConfig, enableFastCount bool) *store {
 	versioner := storage.APIObjectVersioner{}
 	// for compatibility with etcd2 impl.
 	// no-op for default prefix of '/registry'.
@@ -134,6 +135,10 @@ func newStore(c *clientv3.Client, codec runtime.Codec, newFunc, newListFunc func
 		groupResourceString: groupResource.String(),
 		watcher:             w,
 		leaseManager:        newDefaultLeaseManager(c, leaseManagerConfig),
+	}
+
+	if s.maxPageSize <= 0 {
+		s.maxPageSize = maxLimit
 	}
 
 	w.getCurrentStorageRV = func(ctx context.Context) (uint64, error) {
@@ -714,7 +719,7 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 	isFastCountCall := false
 	for {
 		startTime := time.Now()
-		if opts.Recursive && len(opts.Predicate.Continue) > 0 && remainingCount > 0 {
+		if opts.Recursive && len(opts.Predicate.Continue) > 0 && remainingCount > 0 && s.enableFastCount {
 			klog.V(8).Info("invoking fastCount")
 			options = append(options, clientv3.WithFastCount())
 			isFastCountCall = true
@@ -726,7 +731,7 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 		if err != nil {
 			return interpretListError(err, len(opts.Predicate.Continue) > 0, continueKey, keyPrefix)
 		}
-		if isFastCountCall {
+		if isFastCountCall && s.enableFastCount {
 			// Assign RIC from previois call to getResp.Count, i.e; remainingItemCount for current call is calculated using
 			//remainingCount yeilded from decoding previous ContinueToken.
 			// More details on RIC - https://quip-amazon.com/CjrMAniPg7Zn/etcdAPIServer-LIST-Optimization-Migration-Plan
