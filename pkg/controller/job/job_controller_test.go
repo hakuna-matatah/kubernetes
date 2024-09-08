@@ -6256,9 +6256,11 @@ func TestFinalizerCleanup(t *testing.T) {
 	// Start the Pod and Job informers.
 	sharedInformers.Start(ctx.Done())
 	sharedInformers.WaitForCacheSync(ctx.Done())
-	// Initialize the controller with 0 workers to make sure the
-	// pod finalizers are not removed by the "syncJob" function.
-	go manager.Run(ctx, 0)
+	// Initialize the controller with 1 worker to make sure the
+	// pod finalizers are removed by the "syncJob" function.
+	go manager.Run(ctx, 1)
+	// Make sure the pod finalizers are removed by the "orphanWorker" function.
+	go wait.UntilWithContext(ctx, manager.orphanWorker, time.Second)
 
 	// Create a simple Job
 	job := newJob(1, 1, 1, batch.NonIndexedCompletion)
@@ -6292,7 +6294,6 @@ func TestFinalizerCleanup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Waiting for Pod to appear in podLister: %v", err)
 	}
-
 	// Mark Job as complete.
 	job.Status.Conditions = append(job.Status.Conditions, batch.JobCondition{
 		Type:   batch.JobComplete,
@@ -6303,8 +6304,7 @@ func TestFinalizerCleanup(t *testing.T) {
 		t.Fatalf("Updating job status: %v", err)
 	}
 
-	// Verify the pod finalizer is removed for a finished Job,
-	// even if the jobs pods are not tracked by the main reconciliation loop.
+	// Verify the pod finalizer is removed for a finished Job
 	if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, wait.ForeverTestTimeout, true, func(ctx context.Context) (bool, error) {
 		p, err := clientset.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 		if err != nil {

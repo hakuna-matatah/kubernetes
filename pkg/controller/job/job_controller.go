@@ -502,12 +502,6 @@ func (jm *Controller) updateJob(logger klog.Logger, old, cur interface{}) {
 		jm.enqueueSyncJobImmediately(logger, curJob)
 	}
 
-	// The job shouldn't be marked as finished until all pod finalizers are removed.
-	// This is a backup operation in this case.
-	if IsJobFinished(curJob) {
-		jm.cleanupPodFinalizers(curJob)
-	}
-
 	// check if need to add a new rsync for ActiveDeadlineSeconds
 	if curJob.Status.StartTime != nil {
 		curADS := curJob.Spec.ActiveDeadlineSeconds
@@ -789,6 +783,10 @@ func (jm *Controller) syncJob(ctx context.Context, key string) (rErr error) {
 	// make a copy so we don't mutate the shared cache
 	job := *sharedJob.DeepCopy()
 
+	// The job shouldn't be marked as finished until all pod finalizers are removed.
+	if IsJobFinished(&job) {
+		jm.cleanupPodFinalizers(&job)
+	}
 	// if job was finished previously, we don't want to redo the termination
 	if IsJobFinished(&job) {
 		err := jm.podBackoffStore.removeBackoffRecord(key)
