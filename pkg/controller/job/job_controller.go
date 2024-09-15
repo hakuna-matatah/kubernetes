@@ -421,7 +421,6 @@ func (jm *Controller) deletePod(logger klog.Logger, obj interface{}, final bool)
 	if final {
 		recordFinishedPodWithTrackingFinalizer(pod, nil)
 	}
-
 	// When a delete is dropped, the relist will notice a pod in the store not
 	// in the list, leading to the insertion of a tombstone object which contains
 	// the deleted key/value. Note that this value might be stale. If the pod
@@ -536,7 +535,11 @@ func (jm *Controller) deleteJob(logger klog.Logger, obj interface{}) {
 			return
 		}
 	}
-	jm.cleanupPodFinalizers(jobObj)
+	selector, err := metav1.LabelSelectorAsSelector(jobObj.Spec.Selector)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("Unable to parse selector"))
+	}
+	jm.orphanQueue.Add(selector.String())
 }
 
 // enqueueSyncJobImmediately tells the Job controller to invoke syncJob
@@ -571,7 +574,7 @@ func (jm *Controller) enqueueSyncJobWithDelay(logger klog.Logger, obj interface{
 func (jm *Controller) enqueueSyncJobInternal(logger klog.Logger, obj interface{}, delay time.Duration) {
 	key, err := controller.KeyFunc(obj)
 	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %+v: %v", obj, err))
+		utilruntime.HandleError(fmt.Errorf("could not  get key for object %+v: %v", obj, err))
 		return
 	}
 
@@ -651,33 +654,59 @@ func (jm *Controller) syncOrphanPod(ctx context.Context, key string) error {
 	}()
 
 	ns, name, err := cache.SplitMetaNamespaceKey(key)
+
+	if err == nil {
+		// If splitting is successful, treat the key as a pod name.
+		return jm.handleSingleOrphanPod(ctx, ns, name)
+	}
+
+	// If there's an error splitting, assume the key is a label selector
+	logger.V(4).Info("Key is assumed to be a label selector, syncing all matching pods", "labelSelector", key)
+	return jm.syncOrphanPodsBySelector(ctx, key)
+}
+
+// syncOrphanPodsBySelector fetches and processes all pods matching the given label selector.
+func (jm *Controller) syncOrphanPodsBySelector(ctx context.Context, labelSelector string) error {
+	selector, err := labels.Parse(labelSelector)
+	if err != nil {
+		return fmt.Errorf("invalid label selector: %v", err)
+	}
+
+	// Fetch all pods that match the label selector.
+	// relatively expensive operation but given it is in reconciler(not in sync path) and that too as part of orphan reconciler it is ok
+	pods, err := jm.podStore.Pods("").List(selector)
 	if err != nil {
 		return err
 	}
+	for _, pod := range pods {
+		if err := jm.handleSingleOrphanPod(ctx, pod.Namespace, pod.Name); err != nil {
+			klog.Error(err, "Error syncing orphan pod", "pod", pod.Name)
+		}
+	}
+	return nil
+}
 
+// handleSingleOrphanPod processes a single orphan pod (logic remains unchanged).
+func (jm *Controller) handleSingleOrphanPod(ctx context.Context, ns, name string) error {
+	logger := klog.FromContext(ctx)
 	sharedPod, err := jm.podStore.Pods(ns).Get(name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.V(4).Info("Orphan pod has been deleted", "pod", key)
+			logger.V(4).Info("Orphan pod has been deleted", "pod", name)
 			return nil
 		}
 		return err
 	}
-	// Make sure the pod is still orphaned.
 	if controllerRef := metav1.GetControllerOf(sharedPod); controllerRef != nil {
-		job := jm.resolveControllerRef(sharedPod.Namespace, controllerRef)
-		if job != nil {
-			// Skip cleanup of finalizers for pods owned by a job managed by an external controller
-			if controllerName := managedByExternalController(job); controllerName != nil {
-				logger.V(2).Info("Skip cleanup of the job finalizer for a pod owned by a job that is managed by an external controller", "key", key, "podUID", sharedPod.UID, "jobUID", job.UID, "controllerName", controllerName)
-				return nil
-			}
+		if controllerRef.Kind != controllerKind.Kind || controllerRef.APIVersion != batch.SchemeGroupVersion.String() {
+			return nil
 		}
-		if job != nil && !IsJobFinished(job) {
-			// The pod was adopted. Do not remove finalizer.
+		job := jm.resolveControllerRef(sharedPod.Namespace, controllerRef)
+		if job != nil && (managedByExternalController(job) != nil || !IsJobFinished(job)) {
 			return nil
 		}
 	}
+
 	if patch := removeTrackingFinalizerPatch(sharedPod); patch != nil {
 		if err := jm.podControl.PatchPod(ctx, ns, name, patch); err != nil && !apierrors.IsNotFound(err) {
 			return err
